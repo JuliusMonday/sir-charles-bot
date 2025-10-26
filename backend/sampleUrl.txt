@@ -1,0 +1,12 @@
+"https://www.charlesosujifoundation.ca/",
+"https://www.charlesosujifoundation.ca/projects-partnerships/",
+"https://www.charlesosujifoundation.ca/gallery/",
+"https://www.charlesosujifoundation.ca/about-us/",
+"https://www.charlesosujifoundation.ca/recipients/",
+"https://www.charlesosujifoundation.ca/entrepreneurship/",
+"https://www.charlesosujifoundation.ca/advocacy/",
+"https://www.charlesosujifoundation.ca/legal-mentorship/",
+"https://www.charlesosujifoundation.ca/education/",
+"https://www.charlesosujifoundation.ca/programs/",
+"https://www.charlesosujifoundation.ca/about-2-1/",
+"https://www.charlesosujifoundation.ca/contact/"
