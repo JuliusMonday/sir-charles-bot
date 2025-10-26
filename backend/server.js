@@ -24,11 +24,54 @@ try {
   console.error("❌ Could not load websiteData.txt:", error.message);
 }
 
+// ✅ Split content into manageable chunks
+const chunkSize = 1500; // characters per chunk
+const chunks = [];
+for (let i = 0; i < webContent.length; i += chunkSize) {
+  chunks.push(webContent.slice(i, i + chunkSize));
+}
+
+// ✅ Simple helper to find the most relevant chunk
+async function findRelevantChunk(question) {
+  let bestChunk = chunks[0];
+  let highestScore = 0;
+
+  for (const chunk of chunks) {
+    const response = await client.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Question: ${question}\n
+Text: ${chunk}\n
+Does this text contain information relevant to the question? Reply with only a number between 0 and 1.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const scoreText =
+      response?.candidates?.[0]?.content?.parts?.[0]?.text || "0";
+    const score = parseFloat(scoreText.trim());
+
+    if (!isNaN(score) && score > highestScore) {
+      highestScore = score;
+      bestChunk = chunk;
+    }
+  }
+
+  return bestChunk;
+}
+
 // ✅ Chat route
 app.post("/chat", async (req, res) => {
   const { message } = req.body;
-
+  if (!message) return res.status(400).json({ error: "Message is required" });
   try {
+     const relevantChunk = await findRelevantChunk(message);
     // ✅ Add a strong system instruction to limit Gemini’s scope
 const systemInstruction = `
 You are a helpful and factual assistant for the Charles Osuji Foundation trained by JuTeLabs.
@@ -40,7 +83,7 @@ If unsure, respond: "I'm sorry, I don't have enough information about that topic
 
 Use clear, professional, and factual answers — avoid adding any external or speculative information.
 TEXT SOURCE:
-${webContent}
+${relevantChunk}
 `;
 
 
