@@ -3,6 +3,7 @@ import cors from "cors";
 import fs from "fs";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+import { setTimeout } from "timers/promises"; // For implementing a safe delay
 
 dotenv.config();
 
@@ -10,108 +11,102 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// --- Configuration and Initialization ---
+
 // ✅ Initialize Gemini client (latest SDK)
 const client = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
-// ✅ Load your web content
+// ✅ Load your website data
 let webContent = "";
 try {
-  webContent = fs.readFileSync("./websiteData.txt", "utf8");
+  // Use a more robust path resolution for safety
+  const dataPath = new URL('./websiteData.txt', import.meta.url);
+  webContent = fs.readFileSync(dataPath, "utf8");
   console.log("✅ Web content loaded successfully");
 } catch (error) {
-  console.error("❌ Could not load websiteData.txt:", error.message);
+  console.error("❌ Could not load websiteData.txt. Please check file path and permissions:", error.message);
+  // Exit or throw an error if essential data is missing
 }
 
-// ✅ Split content into manageable chunks
-const chunkSize = 1500; // characters per chunk
-const chunks = [];
-for (let i = 0; i < webContent.length; i += chunkSize) {
-  chunks.push(webContent.slice(i, i + chunkSize));
-}
+// NOTE: We don't need to split into chunks anymore because we use a single, efficient RAG call.
+// The entire content is passed as a tool for the model to work with.
 
-// ✅ Simple helper to find the most relevant chunk
-async function findRelevantChunk(question) {
-  let bestChunk = chunks[0];
-  let highestScore = 0;
+// ✅ System instruction and tool definition (The RAG Core)
+const RAG_INSTRUCTION = `
+You are a helpful and factual AI assistant for the Charles Osuji Foundation, created by JuTeLabs.
 
-  for (const chunk of chunks) {
-    const response = await client.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `Question: ${question}\n
-Text: ${chunk}\n
-Does this text contain information relevant to the question? Reply with only a number between 0 and 1.`,
-            },
-          ],
-        },
-      ],
-    });
+You MUST follow these rules:
+1. **ONLY** answer using the information provided in the 'TEXT SOURCE' below.
+2. Do **NOT** guess or add external information.
+3. If the provided 'TEXT SOURCE' doesn't contain an answer, you MUST reply with the exact phrase:
+   "I'm sorry, I don't have enough information about that topic, please browse through the website."
 
-    const scoreText =
-      response?.candidates?.[0]?.content?.parts?.[0]?.text || "0";
-    const score = parseFloat(scoreText.trim());
+TEXT SOURCE:
+---
+${webContent}
+---
+`;
 
-    if (!isNaN(score) && score > highestScore) {
-      highestScore = score;
-      bestChunk = chunk;
-    }
-  }
+// --- Rate Limit Safe Main Route ---
 
-  return bestChunk;
-}
+// A simple retry mechanism using exponential backoff is highly recommended
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 5000; // Start with a 5-second delay
 
-// ✅ Chat route
+// ✅ Main chat route
 app.post("/chat", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message is required" });
-  try {
-     const relevantChunk = await findRelevantChunk(message);
-    // ✅ Add a strong system instruction to limit Gemini’s scope
-const systemInstruction = `
-You are a helpful and factual assistant for the Charles Osuji Foundation trained by JuTeLabs.
 
-⚠️ IMPORTANT:
-Only answer questions using the information from the text below.
-Do NOT guess or add anything not explicitly mentioned.
-If unsure, respond: "I'm sorry, I don't have enough information about that topic, browse through the website."
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      // 🚀 Generate response from Gemini using the efficient RAG instruction
+      // This is a single API call, making it safe for the 15 RPM limit.
+      const result = await client.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          { role: "user", parts: [{ text: RAG_INSTRUCTION }] }, // System instruction with all data
+          { role: "user", parts: [{ text: `User question: ${message}` }] }, // User question
+        ],
+      });
 
-Use clear, professional, and factual answers — avoid adding any external or speculative information.
-TEXT SOURCE:
-${relevantChunk}
-`;
+      const reply =
+        result?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+        "Sorry, I couldn’t get a response.";
 
+      // Success! Respond and break the loop.
+      return res.json({ reply });
 
-    // ✅ Send both the system instruction and user message
-    const result = await client.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: systemInstruction },
-            { text: `User question: ${message}` },
-          ],
-        },
-      ],
-    });
+    } catch (error) {
+      console.error("❌ Error on attempt", attempt + 1, ":", error.message);
 
-    const reply =
-      result?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Sorry, I couldn’t get a response.";
-
-    res.json({ reply });
-  } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: error.message });
+      // --- Rate Limit (429) Handling ---
+      if (error.status === 429 || error.message.includes("429")) {
+        if (attempt < MAX_RETRIES - 1) {
+          // Calculate exponential backoff delay
+          const delay = BASE_DELAY_MS * (2 ** attempt);
+          console.log(`⚠️ Rate limit hit. Retrying in ${delay / 1000} seconds...`);
+          await setTimeout(delay);
+        } else {
+          // Max retries reached
+          return res.status(429).json({ 
+            reply: "The chatbot is currently very busy. Please try again in one minute." 
+          });
+        }
+      } else {
+        // Handle other non-429 errors
+        return res.status(500).json({ 
+            reply: "Sorry, an unexpected error occurred." 
+        });
+      }
+    }
   }
 });
 
-app.listen(5500, () =>
-  console.log("✅ Gemini Chatbot backend running on http://localhost:5500")
+// ✅ Dynamic port
+const PORT = process.env.PORT || 5500;
+app.listen(PORT, () =>
+  console.log(`✅ Gemini Chatbot backend running on http://localhost:${PORT}`)
 );
